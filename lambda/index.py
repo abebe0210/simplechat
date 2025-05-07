@@ -1,122 +1,86 @@
 import json
-import os
-import re
 import urllib.request
 import urllib.error
+from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel
 
-# FastAPIエンドポイントURLを環境変数から取得
-FASTAPI_ENDPOINT_URL = "https://06a2-34-87-73-107.ngrok-free.app/generate"
+# FastAPI アプリケーションの初期化
+app = FastAPI()
 
-def lambda_handler(event, context):
-    if not FASTAPI_ENDPOINT_URL:
-        print("Error: FASTAPI_ENDPOINT_URL environment variable is not set.")
-        return {
-            "statusCode": 500,
-            "headers": {
-                "Content-Type": "application/json",
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Headers": "Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token",
-                "Access-Control-Allow-Methods": "OPTIONS,POST"
-            },
-            "body": json.dumps({
-                "success": False,
-                "error": "FastAPI endpoint URL is not configured."
-            })
-        }
+# 外部APIのエンドポイントURL（適宜変更してください）
+API_URL = "https://06a2-34-87-73-107.ngrok-free.app/generate"
 
+# リクエストボディのスキーマ定義
+class MessageRequest(BaseModel):
+    message: str
+    conversationHistory: list = []
+
+# レスポンスボディのスキーマ定義
+class MessageResponse(BaseModel):
+    success: bool
+    response: str
+    conversationHistory: list
+
+@app.post("/generate", response_model=MessageResponse)
+async def generate_message(request: MessageRequest):
     try:
-        print("Received event:", json.dumps(event))
+        # リクエストデータの取得
+        message = request.message
+        conversation_history = request.conversationHistory
 
-        # Cognito認証情報
-        user_info = None
-        if 'requestContext' in event and 'authorizer' in event['requestContext']:
-            user_info = event['requestContext']['authorizer']['claims']
-            print(f"Authenticated user: {user_info.get('email') or user_info.get('cognito:username')}")
+        # 会話履歴を使用してリクエストペイロードを構築
+        messages = conversation_history.copy()
+        messages.append({"role": "user", "content": message})
 
-        # リクエストボディの解析
-        body = json.loads(event['body'])
-        message = body['message']
-        conversation_history = body.get('conversationHistory', []) # フロントエンドから送られてくる形式
-
-        print("Processing message:", message)
-        print(f"Calling FastAPI endpoint: {FASTAPI_ENDPOINT_URL}")
-
-        # FastAPIへのリクエストペイロードを作成
-        # FastAPI側のInferenceRequestモデルに合わせる
-        fastapi_payload = {
-            "message": message,
-            "conversationHistory": conversation_history # そのまま渡す
+        # 外部API用のリクエストペイロード
+        payload = {
+            "prompt": message,
+            "max_new_tokens": 200,
+            "do_sample": True,
+            "temperature": 0.8,
+            "top_p": 0.9
         }
-        data = json.dumps(fastapi_payload).encode('utf-8')
-
-        # FastAPIエンドポイントへPOSTリクエストを送信
-        req = urllib.request.Request(
-            FASTAPI_ENDPOINT_URL,
-            data=data,
-            headers={'Content-Type': 'application/json'},
-            method='POST'
-        )
-
+        
+        # JSONデータをエンコード
+        data = json.dumps(payload).encode('utf-8')
+        
+        # リクエストオブジェクトの作成
+        req = urllib.request.Request(API_URL, data=data)
+        
+        # ヘッダーの設定
+        req.add_header('Content-Type', 'application/json')
+        req.add_header('Accept', 'application/json')
+        
+        # APIリクエストの送信と応答の取得
         try:
             with urllib.request.urlopen(req) as response:
-                response_status = response.getcode()
-                response_body_bytes = response.read()
-                response_body_str = response_body_bytes.decode('utf-8')
-                print(f"FastAPI response status: {response_status}")
-                print(f"FastAPI response body: {response_body_str}")
-
-                if response_status != 200:
-                     raise Exception(f"FastAPI request failed with status {response_status}: {response_body_str}")
-
-                # FastAPIからのレスポンスを解析 (FastAPI側のInferenceResponseモデルに合わせる)
-                fastapi_response = json.loads(response_body_str)
-
-                if not fastapi_response.get("success"):
-                    error_message = fastapi_response.get("error", "Unknown error from FastAPI")
-                    raise Exception(f"FastAPI inference failed: {error_message}")
-
-                # 成功レスポンスの返却 (FastAPIのレスポンス構造に合わせる)
-                return {
-                    "statusCode": 200,
-                    "headers": {
-                        "Content-Type": "application/json",
-                        "Access-Control-Allow-Origin": "*",
-                        "Access-Control-Allow-Headers": "Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token",
-                        "Access-Control-Allow-Methods": "OPTIONS,POST"
-                    },
-                    "body": json.dumps({
-                        "success": True,
-                        "response": fastapi_response.get("response"),
-                        "conversationHistory": fastapi_response.get("conversationHistory")
-                    })
-                }
-
+                # レスポンスの読み取り
+                response_data = response.read().decode('utf-8')
+                result = json.loads(response_data)
+                
+                # 生成されたテキストを取得
+                generated_text = result.get("generated_text", "")
+                
+                # アシスタントの応答を会話履歴に追加
+                messages.append({"role": "assistant", "content": generated_text})
+                
+                # 成功レスポンスを返却
+                return MessageResponse(
+                    success=True,
+                    response=generated_text,
+                    conversationHistory=messages
+                )
         except urllib.error.HTTPError as e:
-            # HTTPエラーの場合、レスポンスボディも取得試行
-            error_body = "No additional error body."
-            try:
+            # HTTP エラーの場合
+            error_message = f"HTTPエラー: {e.code}, {e.reason}"
+            if hasattr(e, 'read'):
                 error_body = e.read().decode('utf-8')
-            except Exception:
-                pass # 読めなくても無視
-            print(f"HTTPError calling FastAPI: {e.code} - {e.reason}. Body: {error_body}")
-            raise Exception(f"FastAPI request failed: {e.code} {e.reason}. {error_body}") from e
+                error_message += f", レスポンス: {error_body}"
+            raise HTTPException(status_code=e.code, detail=error_message)
         except urllib.error.URLError as e:
-            print(f"URLError calling FastAPI: {e.reason}")
-            raise Exception(f"Could not connect to FastAPI endpoint: {e.reason}") from e
+            # URL エラーの場合
+            raise HTTPException(status_code=500, detail=f"URLエラー: {str(e.reason)}")
 
     except Exception as error:
-        print("Error:", str(error))
-
-        return {
-            "statusCode": 500,
-            "headers": {
-                "Content-Type": "application/json",
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Headers": "Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token",
-                "Access-Control-Allow-Methods": "OPTIONS,POST"
-            },
-            "body": json.dumps({
-                "success": False,
-                "error": str(error)
-            })
-        }
+        # その他のエラーの場合
+        raise HTTPException(status_code=500, detail=str(error))
