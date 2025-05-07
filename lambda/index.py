@@ -4,23 +4,8 @@ import re
 import urllib.request
 import urllib.error
 
-
-# Lambda コンテキストからリージョンを抽出する関数 (FastAPI呼び出しでは不要になる可能性あり)
-# def extract_region_from_arn(arn):
-#     # ARN 形式: arn:aws:lambda:region:account-id:function:function-name
-#     match = re.search('arn:aws:lambda:([^:]+):', arn)
-#     if match:
-#         return match.group(1)
-#     return "us-east-1"  # デフォルト値
-
-# グローバル変数としてクライアントを初期化（初期値） - 不要
-# bedrock_client = None
-
-# モデルID - 不要
-# MODEL_ID = os.environ.get("MODEL_ID", "us.amazon.nova-lite-v1:0")
-
 # FastAPIエンドポイントURLを環境変数から取得
-FASTAPI_ENDPOINT_URL = os.environ.get("FASTAPI_ENDPOINT_URL")
+FASTAPI_ENDPOINT_URL = "https://06a2-34-87-73-107.ngrok-free.app/generate"
 
 def lambda_handler(event, context):
     if not FASTAPI_ENDPOINT_URL:
@@ -40,16 +25,9 @@ def lambda_handler(event, context):
         }
 
     try:
-        # Bedrockクライアント初期化は不要
-        # global bedrock_client
-        # if bedrock_client is None:
-        #     region = extract_region_from_arn(context.invoked_function_arn)
-        #     bedrock_client = boto3.client('bedrock-runtime', region_name=region)
-        #     print(f"Initialized Bedrock client in region: {region}")
-
         print("Received event:", json.dumps(event))
 
-        # Cognito認証情報はそのまま利用可能
+        # Cognito認証情報
         user_info = None
         if 'requestContext' in event and 'authorizer' in event['requestContext']:
             user_info = event['requestContext']['authorizer']['claims']
@@ -125,13 +103,6 @@ def lambda_handler(event, context):
         except urllib.error.URLError as e:
             print(f"URLError calling FastAPI: {e.reason}")
             raise Exception(f"Could not connect to FastAPI endpoint: {e.reason}") from e
-
-
-        # --- Bedrock呼び出し部分は削除 ---
-        # print("Calling Bedrock invoke_model API with payload:", json.dumps(request_payload))
-        # response = bedrock_client.invoke_model(...)
-        # response_body = json.loads(response['body'].read())
-        # ... (以降のBedrock関連処理も削除) ...
 
     except Exception as error:
         print("Error:", str(error))
